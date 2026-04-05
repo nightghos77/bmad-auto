@@ -16,6 +16,7 @@ A CLI tool that automates the [BMAD Method](https://github.com/bmad-code-org/BMA
 - [Before You Start](#before-you-start)
 - [Installation](#installation)
 - [Commands](#commands)
+- [Terminal UI (TUI)](#terminal-ui-tui)
 - [Web Dashboard](#web-dashboard)
 - [Cross-Process Communication](#cross-process-communication)
 - [Failure Handling & Deferrals](#failure-handling--deferrals)
@@ -632,9 +633,93 @@ Then open `http://localhost:3141` in your browser.
 |------|---------|-------------|
 | `-p, --project-root <path>` | Current directory | Path to the BMAD project root |
 | `--dry-run` | `false` | Print planned actions without executing |
+| `--tui` | `false` | Full-screen interactive terminal UI with sprint board (epic command only) |
 | `--dashboard` | `false` | Start web dashboard alongside the run |
 | `--port <port>` | `3141` | Web dashboard port |
 | `--timeout <ms>` | `1800000` | Timeout per skill invocation (30 min) |
+| `--test-gate` | `false` | Enable test suite quality gate (runs tests after dev) |
+| `--gate-mode <mode>` | `balanced` | Test gate behavior: `strict`, `balanced`, or `lenient` |
+| `--budget <usd>` | `0` | Max budget per skill invocation in USD (0 = unlimited) |
+| `--soft-pass-cycles <n>` | `3` | After N review cycles, accept Medium/Low issues instead of deferring (0 = disable) |
+| `--no-interactive` | `false` | Disable interactive prompts on failure (auto-defer instead) |
+
+---
+
+## Terminal UI (TUI)
+
+The `--tui` flag launches a full-screen interactive terminal interface built with [Ink](https://github.com/vadimdemedes/ink) (React for the terminal). It replaces the default scrolling CLI output with a multi-panel sprint board.
+
+```bash
+bmad-auto epic 1 --tui
+```
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Sprint Board                                           │
+│                                                         │
+│  🔄 epic-1: Project Foundation & Auth                   │
+│     ████████████░░░░░░░░ 3/5 (60%)                      │
+│     ✅ 1-1-project-setup: done                          │
+│     ✅ 1-2-auth-middleware: done                        │
+│   → 🔄 1-3-user-registration: in-progress              │
+│     📋 1-4-password-reset: ready-for-dev               │
+│     ⏳ 1-5-session-mgmt: backlog                       │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  Status Bar                                             │
+│  ⏳ bmad-dev-story → 1-3-user-registration              │
+│  Elapsed: 2m 45s | Stories: 1/5                         │
+├─────────────────────────────────────────────────────────┤
+│  Live Output                                            │
+│  ▶ Starting bmad-dev-story on 1-3-user-registration     │
+│  [tool] Read → /src/auth.ts                             │
+│  ✓ bmad-dev-story completed in 45s                      │
+│  ✓ Gate [test_suite]: All tests pass                    │
+├─────────────────────────────────────────────────────────┤
+│  Tab: switch panel | ↑↓: navigate | Enter: expand | G: end │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Panels
+
+| Panel | Description |
+|-------|-------------|
+| **Sprint Board** | All epics and stories with status icons, progress bars, and per-epic completion percentages. Navigate stories with arrow keys, press Enter to expand/collapse story details. |
+| **Status Bar** | Current activity (skill + story), elapsed time, stories processed count, and outcome (running/complete/halted). |
+| **Live Output** | Scrollable real-time log of skill execution. Tool calls, assistant output, gate results, and errors are color-coded. |
+
+### Keyboard Controls
+
+| Key | Sprint Board (focused) | Live Output (focused) |
+|-----|----------------------|----------------------|
+| `Tab` | Switch focus to Live Output | Switch focus to Sprint Board |
+| `Up` | Select previous story | Scroll up |
+| `Down` | Select next story | Scroll down |
+| `Enter` | Expand/collapse story details | — |
+| `G` | — | Jump to bottom (latest output) |
+
+### Story Status Icons
+
+| Icon | Status |
+|------|--------|
+| ✅ | `done` |
+| 🔄 | `in-progress` |
+| 🔍 | `review` |
+| 📋 | `ready-for-dev` |
+| ⏳ | `backlog` |
+| ⏭ | `deferred` |
+
+### When to Use TUI vs Dashboard vs Default
+
+| Mode | Command | Best For |
+|------|---------|----------|
+| **Default CLI** | `bmad-auto epic 1` | Simple runs, CI pipelines, piping output to files |
+| **TUI** | `bmad-auto epic 1 --tui` | Single-terminal monitoring with keyboard navigation |
+| **Web Dashboard** | `bmad-auto epic 1 --dashboard` | Browser-based monitoring, multi-monitor setups, sharing with teammates |
+
+> **Note:** The `--tui` flag is currently available on the `epic` command. The `--dashboard` flag works with `epic`, `story`, and `run`.
 
 ---
 

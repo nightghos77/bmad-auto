@@ -15,10 +15,53 @@ Automation tooling for the [BMAD Method](https://github.com/bmad-code-org/BMAD-M
 npm run setup
 
 # Run the autopilot from a BMAD project
-bmad-autopilot run
+bmad-auto run
 ```
 
 Requires **Node.js >= 20** and **Claude Code CLI** installed and authenticated.
+
+## CLI Usage
+
+```bash
+# List all epics with progress bars
+bmad-auto epics
+
+# Run all stories in an epic
+bmad-auto epic 1
+
+# Run a specific story
+bmad-auto story 1-4-password-reset
+
+# Run all pending stories across all epics
+bmad-auto run
+
+# Show sprint status
+bmad-auto status
+```
+
+### Terminal UI (TUI)
+
+Launch a full-screen interactive sprint board with live output, keyboard navigation, and real-time status updates:
+
+```bash
+bmad-auto epic 1 --tui
+```
+
+Use `Tab` to switch panels, arrow keys to navigate stories, `Enter` to expand details, and `G` to jump to the latest output.
+
+### Web Dashboard
+
+Start a browser-based dashboard alongside any run:
+
+```bash
+bmad-auto epic 1 --dashboard
+# Then open http://localhost:3141
+
+# Or run standalone in a separate terminal:
+bmad-auto dashboard -p /path/to/project
+```
+
+See [`bmad-autopilot/README.md`](bmad-autopilot/README.md) for full command reference, options, and architecture details.
 
 ## Contributing
 
