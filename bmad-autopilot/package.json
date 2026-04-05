@@ -1,0 +1,54 @@
+{
+  "name": "bmad-autopilot",
+  "version": "0.1.0",
+  "description": "CLI tool that automates the BMAD Method Phase 4 implementation cycle. Run `npx bmad-autopilot run` from any BMAD project.",
+  "type": "module",
+  "bin": {
+    "bmad-autopilot": "./dist/cli.js",
+    "bmad-auto": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "bmad",
+    "bmad-method",
+    "autopilot",
+    "orchestrator",
+    "sprint",
+    "cli",
+    "ai",
+    "claude"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bmad-code-org/bmad-autopilot"
+  },
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "ink": "^6.8.0",
+    "js-yaml": "^4.1.1",
+    "react": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  }
+}

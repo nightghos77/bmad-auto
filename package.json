@@ -1,0 +1,10 @@
+{
+  "name": "bmad-auto",
+  "private": true,
+  "description": "BMAD Method project",
+  "scripts": {
+    "build": "cd bmad-autopilot && npm install && npm run build",
+    "link": "cd bmad-autopilot && npm link",
+    "setup": "cd bmad-autopilot && npm install && npm run build && npm link"
+  }
+}

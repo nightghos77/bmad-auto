@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Test coverage
+coverage/
+
+# BMAD run output (user-specific)
+_bmad-output/
+
+# Cursor AI
+.cursor/
