@@ -2,6 +2,21 @@
 
 Automation tooling for the [BMAD Method](https://github.com/bmad-code-org/BMAD-METHOD) — a CLI that orchestrates Phase 4 implementation end-to-end using Claude Code skills.
 
+## The Pipeline
+
+BMAD Auto turns a sprint backlog into shipped code through a six-phase loop that runs unattended until the sprint is done or a quality gate fires:
+
+```
+sprint-status.yaml ──> Story Selection ──> Skill Execution ──> Quality Gates
+        ^                                        |                   |
+        |                                        v                   v
+        +──── status update <──── Claude Code CLI (skills) ──── pass / halt
+```
+
+**How it works:** The orchestrator reads `sprint-status.yaml`, picks the first actionable story, maps its status to a BMAD skill (`bmad-create-story`, `bmad-dev-story`, or `bmad-code-review`), spawns it via the Claude Code CLI with streamed output, then runs quality gates — a test-suite gate that ignores pre-existing failures and a code-review severity gate that halts on Critical/High findings. If the code review finds issues, the orchestrator automatically sets the story back to `in-progress` and re-runs `bmad-dev-story` with targeted cycle context (only the unresolved findings and changed files), looping until the review passes or a max-cycle limit is reached. Once a story is done, the next one is picked up and the loop continues.
+
+**Token efficiency is a first-class concern.** Each skill invocation receives only the minimal context it needs — the story key, the workflow definition, and (in fix cycles) a capped 2K-char extract of review findings plus a diff of changed files. The companion `bmad-distillator` skill compresses planning documents down to dense, LLM-optimized distillates at roughly a 3:1 token ratio (e.g. 15K tokens of prose becomes ~5K tokens of structured bullets) with lossless information preservation. Test baselines are captured once at run start so gate checks are a simple diff, not a full re-analysis. The result: a complete create-develop-review cycle for a typical story runs in 3-4 skill invocations, each operating well within a single context window, with no redundant re-reading of project docs between steps.
+
 ## What's Inside
 
 - **`bmad-autopilot/`** — The core CLI tool. Reads sprint status, picks the next story, invokes the right Claude Code skill, runs quality gates, and loops until the sprint is done or a HALT is triggered.

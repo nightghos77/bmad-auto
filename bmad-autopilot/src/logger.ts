@@ -33,8 +33,8 @@ export class RunLogger {
 
   log(entry: Omit<LogEntry, 'ts'>): void {
     const line: LogEntry = {
-      ts: new Date().toISOString(),
       ...entry,
+      ts: new Date().toISOString(),
     };
     appendFileSync(this.filePath, JSON.stringify(line) + '\n');
   }
