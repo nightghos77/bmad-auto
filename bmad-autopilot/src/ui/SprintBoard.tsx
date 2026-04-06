@@ -62,6 +62,10 @@ export function SprintBoard({ status, epicNames = {}, epicDescriptions = {}, cur
     }
   }
 
+  // Calculate overall project progress
+  const totalStories = epics.reduce((sum, e) => sum + e.stories.length, 0);
+  const totalDone = epics.reduce((sum, e) => sum + e.stories.filter(([, s]) => s === 'done').length, 0);
+
   return (
     <Box flexDirection="column" paddingX={1}>
       <Box marginBottom={1}>
@@ -70,23 +74,31 @@ export function SprintBoard({ status, epicNames = {}, epicDescriptions = {}, cur
           {focused ? <Text dimColor> (focused)</Text> : null}
         </Text>
       </Box>
-      <Box marginBottom={1}>
+      <Box marginBottom={1} flexDirection="column">
         <Text dimColor>{'  '}Project: {status.project}</Text>
+        <Box marginTop={0}>
+          <Text>{'  '}Overall Progress: </Text>
+          <ProgressBar done={totalDone} total={totalStories} />
+        </Box>
       </Box>
       {epics.map((epic) => {
         const doneCount = epic.stories.filter(([, s]) => s === 'done').length;
         const totalCount = epic.stories.length;
+        const epicName = epicNames[epic.key];
+        const epicDesc = epicDescriptions[epic.key];
         return (
           <Box key={epic.key} flexDirection="column" marginBottom={1}>
-            <Box>
-              <Text bold>{'  '}{STATUS_ICONS[epic.status] || '⏳'} {epic.key}{epicNames[epic.key] ? `: ${epicNames[epic.key]}` : ''} </Text>
-              <ProgressBar done={doneCount} total={totalCount} />
-            </Box>
-            {epicDescriptions[epic.key] ? (
-              <Box marginLeft={5}>
-                <Text dimColor italic wrap="wrap">{'  '}{epicDescriptions[epic.key]}</Text>
+            <Box flexDirection="column">
+              <Box>
+                <Text bold>{'  '}{STATUS_ICONS[epic.status] || '⏳'} {epic.key}{epicName ? `: ${epicName}` : ''} </Text>
+                <ProgressBar done={doneCount} total={totalCount} />
               </Box>
-            ) : null}
+              {epicDesc ? (
+                <Box marginLeft={5} marginBottom={0}>
+                  <Text dimColor italic wrap="wrap">{'    '}{epicDesc}</Text>
+                </Box>
+              ) : null}
+            </Box>
             {epic.stories.map(([storyKey, storyStatus]) => {
               const isActive = storyKey === currentStory;
               const storyIdx = storyKeys.indexOf(storyKey);

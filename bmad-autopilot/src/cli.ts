@@ -2,11 +2,27 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { resolve } from 'node:path';
+import { readdirSync, existsSync } from 'node:fs';
 import { loadConfig, detectBmadVersion } from './config.js';
 import { orchestrate } from './orchestrator.js';
 import { loadSprintStatus, getNextAction, getEpicKeys, getEpicStories, parseEpicNames, parseEpicDescriptions, humanizeStoryKey, isStoryKey } from './state.js';
 
 const program = new Command();
+
+/** Scan all epics*.md files and merge names/descriptions across all of them. */
+function getAllEpicMeta(planDir: string) {
+  const epicNames: Record<string, string> = {};
+  const epicDescs: Record<string, string> = {};
+  if (!existsSync(planDir)) return { epicNames, epicDescs };
+  const files = readdirSync(planDir)
+    .filter(f => f.startsWith('epics') && f.endsWith('.md'))
+    .map(f => resolve(planDir, f));
+  for (const f of files) {
+    Object.assign(epicNames, parseEpicNames(f));
+    Object.assign(epicDescs, parseEpicDescriptions(f));
+  }
+  return { epicNames, epicDescs };
+}
 
 program
   .name('bmad-auto')
@@ -169,9 +185,7 @@ program
       const config = loadConfig(options.projectRoot);
       const statusFile = resolve(config.implementation_artifacts, 'sprint-status.yaml');
       const status = loadSprintStatus(statusFile);
-      const epicsFile = resolve(config.planning_artifacts, 'epics.md');
-      const epicNames = parseEpicNames(epicsFile);
-      const epicDescs = parseEpicDescriptions(epicsFile);
+      const { epicNames, epicDescs } = getAllEpicMeta(config.planning_artifacts);
       const epics = getEpicKeys(status);
 
       console.log(chalk.bold.cyan(`\n  BMAD Autopilot — ${status.project}\n`));
@@ -438,9 +452,7 @@ program
       const statusFile = resolve(config.implementation_artifacts, 'sprint-status.yaml');
       const status = loadSprintStatus(statusFile);
 
-      const epicsFile = resolve(config.planning_artifacts, 'epics.md');
-      const epicNames = parseEpicNames(epicsFile);
-      const epicDescs = parseEpicDescriptions(epicsFile);
+      const { epicNames, epicDescs } = getAllEpicMeta(config.planning_artifacts);
 
       console.log(chalk.bold.cyan('\n  BMAD Autopilot — Sprint Status\n'));
       console.log(chalk.dim('  Project: ') + status.project);

@@ -22,6 +22,8 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
 
   // Track current activity so new SSE clients get caught up
   let currentActivity: { skill: string; storyKey: string } | null = null;
+  let runStartTime: string | null = null; // ISO timestamp of orchestrator run start
+  let taskStartTime: string | null = null; // ISO timestamp of current skill start
   const recentOutput: { line: string; type: string }[] = [];
 
   function broadcast(event: string, data: unknown) {
@@ -34,20 +36,27 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
   // Wire all events to SSE
   runnerEvents.on('skill_start', (d) => {
     currentActivity = { skill: d.skill, storyKey: d.storyKey };
+    taskStartTime = new Date().toISOString();
     recentOutput.length = 0;
-    broadcast('skill_start', d);
+    broadcast('skill_start', { ...d, ts: taskStartTime });
   });
-  runnerEvents.on('skill_complete', (d) => { currentActivity = null; recentOutput.length = 0; broadcast('skill_complete', d); });
+  runnerEvents.on('skill_complete', (d) => { currentActivity = null; taskStartTime = null; recentOutput.length = 0; broadcast('skill_complete', d); });
   runnerEvents.on('skill_error', (d) => broadcast('skill_error', d));
-  runnerEvents.on('skill_timeout', (d) => { currentActivity = null; broadcast('skill_timeout', d); });
+  runnerEvents.on('skill_timeout', (d) => { currentActivity = null; taskStartTime = null; broadcast('skill_timeout', d); });
   runnerEvents.on('skill_output', (d) => {
     recentOutput.push({ line: d.line, type: d.type });
     if (recentOutput.length > 200) recentOutput.splice(0, recentOutput.length - 200);
     broadcast('skill_output', d);
   });
-  orchestratorEvents.on('log', (msg: string) => broadcast('log', { message: msg }));
-  orchestratorEvents.on('outcome', (outcome: string) => { currentActivity = null; broadcast('outcome', { outcome }); });
-  orchestratorEvents.on('halt', (reason: string, story: string) => { currentActivity = null; broadcast('halt', { reason, story }); });
+  orchestratorEvents.on('log', (msg: string) => {
+    if (msg.startsWith('Run started')) {
+      runStartTime = new Date().toISOString();
+      broadcast('run_start', { ts: runStartTime });
+    }
+    broadcast('log', { message: msg });
+  });
+  orchestratorEvents.on('outcome', (outcome: string) => { currentActivity = null; taskStartTime = null; broadcast('outcome', { outcome }); });
+  orchestratorEvents.on('halt', (reason: string, story: string) => { currentActivity = null; taskStartTime = null; broadcast('halt', { reason, story }); });
   orchestratorEvents.on('gate', (result: unknown) => broadcast('gate', result));
 
   // ─── File watchers for standalone dashboard mode ───
@@ -90,19 +99,23 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
       const entry = JSON.parse(line);
       switch (entry.event) {
         case 'run_start':
+          runStartTime = entry.ts || new Date().toISOString();
+          broadcast('run_start', { ts: runStartTime });
           broadcast('log', { message: `Run started` });
           break;
         case 'action_selected':
           if (!currentActivity || currentActivity.storyKey !== entry.story) {
             currentActivity = { skill: entry.skill, storyKey: entry.story };
+            taskStartTime = entry.ts || new Date().toISOString();
             recentOutput.length = 0;
-            broadcast('skill_start', { skill: entry.skill, storyKey: entry.story });
+            broadcast('skill_start', { skill: entry.skill, storyKey: entry.story, ts: taskStartTime });
             broadcast('log', { message: `[${entry.story}] ${entry.status} → ${entry.skill}` });
           }
           break;
         case 'skill_result':
           if (entry.exitCode === 0) {
             currentActivity = null;
+            taskStartTime = null;
             recentOutput.length = 0;
             broadcast('skill_complete', { skill: entry.skill, storyKey: entry.story, durationMs: entry.durationMs });
           } else {
@@ -187,12 +200,26 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
 
   startFileWatchers();
 
+  /** Find all epics*.md files and merge their names/descriptions. */
+  function getAllEpicMeta() {
+    const planDir = config.planning_artifacts;
+    const epicNames: Record<string, string> = {};
+    const epicDescriptions: Record<string, string> = {};
+    if (!existsSync(planDir)) return { epicNames, epicDescriptions };
+    const files = readdirSync(planDir)
+      .filter(f => f.startsWith('epics') && f.endsWith('.md'))
+      .map(f => resolve(planDir, f));
+    for (const f of files) {
+      Object.assign(epicNames, parseEpicNames(f));
+      Object.assign(epicDescriptions, parseEpicDescriptions(f));
+    }
+    return { epicNames, epicDescriptions };
+  }
+
   function getStatusPayload() {
     const status = loadSprintStatus(statusFile);
     const next = getNextAction(status);
-    const epicsFile = resolve(config.planning_artifacts, 'epics.md');
-    const epicNames = parseEpicNames(epicsFile);
-    const epicDescriptions = parseEpicDescriptions(epicsFile);
+    const { epicNames, epicDescriptions } = getAllEpicMeta();
     const epics = buildEpicStructure(status, epicNames, epicDescriptions);
     return { status, next, epics, project: config.project_name };
   }
@@ -211,10 +238,9 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
       exists = true;
     }
 
-    // If no story file, fall back to extracting from epics.md
+    // If no story file, fall back to extracting from epics files
     if (!exists) {
-      const epicsFile = resolve(config.planning_artifacts, 'epics.md');
-      const epicData = parseStoryFromEpics(epicsFile, storyKey);
+      const epicData = findStoryInEpicsFiles(config.planning_artifacts, storyKey);
       if (epicData) {
         return {
           exists: true,
@@ -239,11 +265,10 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
     const statusMatch = content.match(/^Status:\s*(.+)/m);
     const status = statusMatch ? statusMatch[1].trim() : 'unknown';
 
-    // If story file exists but has no parsed sections, try epics.md fallback for description
+    // If story file exists but has no parsed sections, try epics files fallback for description
     let epicFallback: { storySection?: string; acSection?: string } | null = null;
     if (exists && !storySection && !tasksSection) {
-      const epicsFile = resolve(config.planning_artifacts, 'epics.md');
-      epicFallback = parseStoryFromEpics(epicsFile, storyKey);
+      epicFallback = findStoryInEpicsFiles(config.planning_artifacts, storyKey);
     }
 
     // Extract all ## headings found in the file for debugging
@@ -319,9 +344,12 @@ export function startDashboard(options: DashboardOptions): { close: () => void }
       });
       res.write(`event: connected\ndata: ${JSON.stringify({ time: new Date().toISOString() })}\n\n`);
       sseClients.add(res);
-      // Catch up new client with current activity
+      // Catch up new client with run timing and current activity
+      if (runStartTime) {
+        res.write(`event: run_start\ndata: ${JSON.stringify({ ts: runStartTime })}\n\n`);
+      }
       if (currentActivity) {
-        res.write(`event: skill_start\ndata: ${JSON.stringify(currentActivity)}\n\n`);
+        res.write(`event: skill_start\ndata: ${JSON.stringify({ ...currentActivity, ts: taskStartTime })}\n\n`);
         for (const line of recentOutput.slice(-80)) {
           res.write(`event: skill_output\ndata: ${JSON.stringify(line)}\n\n`);
         }
@@ -361,6 +389,19 @@ function extractSection(content: string, heading: string): string {
   const match = content.match(regex);
   if (!match) return '';
   return match[0].replace(new RegExp(`^##\\s+${heading}\\s*\\n?`), '').trim();
+}
+
+/** Search all epics*.md files for a story's description. */
+function findStoryInEpicsFiles(planDir: string, storyKey: string) {
+  if (!existsSync(planDir)) return null;
+  const files = readdirSync(planDir)
+    .filter(f => f.startsWith('epics') && f.endsWith('.md'))
+    .map(f => resolve(planDir, f));
+  for (const f of files) {
+    const result = parseStoryFromEpics(f, storyKey);
+    if (result) return result;
+  }
+  return null;
 }
 
 function buildEpicStructure(status: SprintStatus, epicNames: Record<string, string> = {}, epicDescriptions: Record<string, string> = {}) {
@@ -409,9 +450,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,
 
 /* Overall progress bar in header */
 .overall-progress { display:flex; align-items:center; gap:8px; }
-.overall-bar { width:120px; height:6px; background:var(--border); border-radius:3px; overflow:hidden; }
-.overall-fill { height:100%; background:var(--green); border-radius:3px; transition:width .5s; }
-.overall-text { font-size:12px; color:var(--text-dim); }
+.overall-bar { width:180px; height:8px; background:var(--border); border-radius:4px; overflow:hidden; }
+.overall-fill { height:100%; background:var(--green); border-radius:4px; transition:width .5s; }
+.overall-text { font-size:13px; color:var(--text); font-weight:600; }
 
 /* Layout: activity hero on top, then 2-col below */
 .layout { max-width:1400px; margin:0 auto; padding:16px 24px; }
@@ -480,12 +521,12 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,
 .epic-chevron.open { transform:rotate(90deg); }
 .epic-name { font-weight:600; font-size:14px; flex:1; }
 .epic-stats { font-size:12px; color:var(--text-dim); display:flex; align-items:center; gap:8px; }
-.epic-minibar { width:60px; height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
-.epic-minifill { height:100%; background:var(--green); border-radius:2px; }
+.epic-minibar { width:100px; height:6px; background:var(--border); border-radius:3px; overflow:hidden; }
+.epic-minifill { height:100%; background:var(--green); border-radius:3px; transition:width .5s; }
 .epic-body { border-top:1px solid var(--border); }
 .epic-body.collapsed { display:none; }
-.epic-description { padding:8px 14px 4px 38px; color:var(--text-dim); font-size:13px; font-style:italic;
-  line-height:1.5; border-bottom:1px solid var(--border); }
+.epic-description { padding:10px 14px 8px 38px; color:var(--text-dim); font-size:13px;
+  line-height:1.6; border-bottom:1px solid var(--border); background:rgba(255,255,255,.02); }
 .badge { font-size:11px; padding:2px 8px; border-radius:10px; font-weight:500; }
 
 /* Stories inside epic */
@@ -563,8 +604,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,
   <h1>\u2699 BMAD Autopilot</h1>
   <div class="right">
     <div class="overall-progress">
-      <div class="overall-bar"><div class="overall-fill" id="overall-fill" style="width:0%"></div></div>
       <span class="overall-text" id="overall-text">0%</span>
+      <div class="overall-bar"><div class="overall-fill" id="overall-fill" style="width:0%"></div></div>
+      <span style="font-size:12px;color:var(--text-dim)" id="overall-count"></span>
     </div>
     <span class="project">${projectName}</span>
     <span class="conn-dot" id="conn-dot" title="Disconnected"></span>
@@ -577,8 +619,9 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,
     <div class="hero-status">
       <div class="hero-outcome" id="hero-outcome">\u23f3 Connecting...</div>
       <div class="current-step" id="current-step-display"></div>
-      <div class="hero-stat">Stories done: <strong id="stories-count">0</strong> / <strong id="stories-total">0</strong></div>
-      <div class="hero-stat">Elapsed: <strong id="elapsed-time">0s</strong></div>
+      <div class="hero-stat" id="epic-progress-display">Waiting...</div>
+      <div class="hero-stat">Session: <strong id="session-time">0s</strong></div>
+      <div class="hero-stat">Current task: <strong id="task-time">—</strong></div>
       <div class="hero-next" id="next-action-display"></div>
     </div>
     <div class="hero-activity" id="activity-container">
@@ -619,7 +662,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,
 
 <script>
 const state = {
-  connected:false, outcome:'idle', storiesProcessed:0, startTime:Date.now(),
+  connected:false, outcome:'idle',
+  sessionStartTime:null, taskStartTime:null,
   currentSkill:null, currentStory:null, logs:[], gates:[], epics:[],
   haltReason:null, next:null, expandedStories:{}, expandedEpics:{},
   storyCache:{}, commitsCache:{}, activityLines:[], totalStories:0,
@@ -669,9 +713,14 @@ function connectSSE() {
     document.getElementById('conn-dot').title='Connected';
     // Server sends current activity state on connect — UI will update via skill_start/skill_output events
   });
+  es.addEventListener('run_start', (e) => {
+    const d=JSON.parse(e.data);
+    state.sessionStartTime=new Date(d.ts).getTime();
+  });
   es.addEventListener('skill_start', (e) => {
     const d=JSON.parse(e.data); state.currentSkill=d.skill; state.currentStory=d.storyKey;
     state.outcome='running'; state.activityLines=[]; state.activeStoryDetail=null;
+    state.taskStartTime=d.ts ? new Date(d.ts).getTime() : Date.now();
     addLog('\u25b6 '+d.skill+' \u2192 '+d.storyKey,'info');
     for (const ep of state.epics) { if (ep.stories.some(s=>s.key===d.storyKey)) state.expandedEpics[ep.key]=true; }
     // Fetch story detail for the active story (bypass cache to get fresh data)
@@ -688,11 +737,13 @@ function connectSSE() {
     renderActivityOutput();
   });
   es.addEventListener('skill_complete', (e) => {
-    const d=JSON.parse(e.data); state.storiesProcessed++; state.currentSkill=null;
-    state.activeStoryDetail=null;
+    const d=JSON.parse(e.data); state.currentSkill=null;
+    state.activeStoryDetail=null; state.taskStartTime=null;
+    document.getElementById('task-time').textContent=d.durationMs ? fmtElapsed(d.durationMs) : '\u2014';
     if (state.activeStoryRefreshTimer) { clearInterval(state.activeStoryRefreshTimer); state.activeStoryRefreshTimer=null; }
     delete state.storyCache[d.storyKey]; delete state.commitsCache[d.storyKey];
     addLog('\u2713 '+d.skill+' done ('+Math.round(d.durationMs/1000)+'s)','success');
+    soundStoryComplete();
     loadStatus(); renderActivity(); renderOutcome();
   });
   es.addEventListener('skill_error', (e) => {
@@ -706,11 +757,15 @@ function connectSSE() {
   });
   es.addEventListener('outcome', (e) => {
     const d=JSON.parse(e.data); state.outcome=d.outcome; state.currentSkill=null; state.currentStory=null;
+    state.taskStartTime=null;
+    if (d.outcome==='complete') soundEpicComplete();
+    else if (d.outcome==='complete_with_deferrals') soundNeedsReview();
     loadStatus(); renderOutcome(); renderActivity();
   });
   es.addEventListener('halt', (e) => {
     const d=JSON.parse(e.data); state.outcome='halted'; state.haltReason=d.reason;
-    state.currentStory=d.story; state.currentSkill=null;
+    state.currentStory=d.story; state.currentSkill=null; state.taskStartTime=null;
+    soundHalt();
     addLog('HALTED: '+d.reason,'error'); loadStatus(); renderOutcome(); renderActivity();
   });
   es.addEventListener('gate', (e) => { state.gates.push(JSON.parse(e.data)); renderGates(); });
@@ -803,7 +858,30 @@ function renderOverall() {
   const pct = state.totalStories>0 ? Math.round(done/state.totalStories*100) : 0;
   document.getElementById('overall-fill').style.width=pct+'%';
   document.getElementById('overall-text').textContent=pct+'%';
-  document.getElementById('stories-total').textContent=state.totalStories;
+  document.getElementById('overall-count').textContent=done+'/'+state.totalStories+' stories';
+}
+
+function renderEpicProgress() {
+  const el = document.getElementById('epic-progress-display');
+  if (!el) return;
+  // Find the active epic based on current story or in-progress status
+  let activeEpic = null;
+  if (state.currentStory) {
+    const epicNum = state.currentStory.split('-')[0];
+    activeEpic = state.epics.find(e => e.key === 'epic-'+epicNum);
+  }
+  if (!activeEpic) activeEpic = state.epics.find(e => e.status === 'in-progress');
+  if (!activeEpic) {
+    el.innerHTML = 'No active epic';
+    return;
+  }
+  const done = activeEpic.stories.filter(s => s.status === 'done').length;
+  const deferred = activeEpic.stories.filter(s => s.status === 'deferred').length;
+  const total = activeEpic.stories.length;
+  let text = esc(activeEpic.key) + (activeEpic.name ? ': '+esc(activeEpic.name) : '') +
+    ' \u2014 <strong>' + done + '</strong>/' + total + ' stories done';
+  if (deferred > 0) text += ' (<span style="color:var(--orange)">' + deferred + ' deferred</span>)';
+  el.innerHTML = text;
 }
 
 function renderOutcome() {
@@ -833,7 +911,7 @@ function renderOutcome() {
     el.innerHTML='<span style="color:'+o[2]+'">'+o[0]+' '+o[1]+'</span>';
     if (stepEl) stepEl.innerHTML='';
   }
-  document.getElementById('stories-count').textContent=state.storiesProcessed;
+  renderEpicProgress();
   if (state.next && state.outcome!=='complete') {
     nextEl.innerHTML='Next: '+esc(skillLabel(state.next.skill))+' \u2192 '+state.next.storyKey;
   } else if (state.outcome==='complete') {
@@ -949,7 +1027,7 @@ function renderEpicHTML(epic) {
   h+='<span class="epic-stats">';
   h+='<span class="badge status-'+epic.status+'">'+epic.status+'</span>';
   h+='<span class="epic-minibar"><span class="epic-minifill" style="width:'+pct+'%"></span></span>';
-  h+='<span>'+done+'/'+total+'</span>';
+  h+='<span>'+done+'/'+total+' ('+pct+'%)</span>';
   h+='</span></div>';
 
   h+='<div class="epic-body'+(isOpen?'':' collapsed')+'">';
@@ -1060,12 +1138,69 @@ function sIcon(s) {
 }
 function esc(s) { return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''; }
 
+function fmtElapsed(ms) {
+  const s=Math.floor(ms/1000); const m=Math.floor(s/60); const h=Math.floor(m/60);
+  if (h>0) return h+'h '+String(m%60).padStart(2,'0')+'m '+String(s%60).padStart(2,'0')+'s';
+  return m>0 ? m+'m '+(s%60)+'s' : s+'s';
+}
 setInterval(()=>{
-  if (state.outcome==='running') {
-    const s=Math.floor((Date.now()-state.startTime)/1000); const m=Math.floor(s/60);
-    document.getElementById('elapsed-time').textContent=m>0?m+'m '+(s%60)+'s':s+'s';
+  if (state.sessionStartTime) {
+    document.getElementById('session-time').textContent=fmtElapsed(Date.now()-state.sessionStartTime);
+  }
+  if (state.taskStartTime) {
+    document.getElementById('task-time').textContent=fmtElapsed(Date.now()-state.taskStartTime);
+  } else {
+    document.getElementById('task-time').textContent='\u2014';
   }
 },1000);
+
+// ----- SOUNDS (Web Audio API) -----
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playTone(freq, duration, type, gainVal) {
+  const ctx = getAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.value = freq;
+  gain.gain.value = gainVal || 0.15;
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + duration);
+}
+
+function soundStoryComplete() {
+  // Pleasant two-note chime: C5 → E5
+  playTone(523, 0.15, 'sine', 0.12);
+  setTimeout(() => playTone(659, 0.25, 'sine', 0.12), 120);
+}
+
+function soundEpicComplete() {
+  // Triumphant fanfare: C5 → E5 → G5 → C6
+  playTone(523, 0.15, 'triangle', 0.15);
+  setTimeout(() => playTone(659, 0.15, 'triangle', 0.15), 150);
+  setTimeout(() => playTone(784, 0.15, 'triangle', 0.15), 300);
+  setTimeout(() => playTone(1047, 0.4, 'triangle', 0.18), 450);
+}
+
+function soundNeedsReview() {
+  // Attention: two descending tones A5 → D5
+  playTone(880, 0.2, 'square', 0.08);
+  setTimeout(() => playTone(587, 0.35, 'square', 0.08), 250);
+}
+
+function soundHalt() {
+  // Alert: low repeated buzz E4 → E4
+  playTone(330, 0.15, 'sawtooth', 0.1);
+  setTimeout(() => playTone(330, 0.15, 'sawtooth', 0.1), 250);
+  setTimeout(() => playTone(262, 0.3, 'sawtooth', 0.1), 500);
+}
 
 loadStatus(); connectSSE();
 // Poll status periodically to stay in sync
